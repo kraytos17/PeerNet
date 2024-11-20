@@ -1,5 +1,6 @@
-#include <iostream>
+#include <print>
 
-int main(int, char**){
-    std::cout << "Hello, from peernet!\n";
+auto main() -> int {
+    std::println("Hello world");
+    return 0;
 }
