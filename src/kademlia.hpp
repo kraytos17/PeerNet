@@ -6,6 +6,7 @@
 #include <bit>
 #include <chrono>
 #include <cstring>
+#include <expected>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -16,13 +17,11 @@
 #include <thread>
 #include <vector>
 
-enum class DHTError { Success = 0, PeerNotFound, StaleData, NetworkError, PeerLimitExceeded };
+enum class DHTError { Success = 0, PeerNotFound, StaleData, NetworkError, PeerLimitExceeded, InvalidPeer };
 
 class NodeId {
-    std::array<uint8_t, 20> m_id;
-
 public:
-    constexpr NodeId() noexcept = default;
+    constexpr NodeId() noexcept : m_id{} {}
     explicit constexpr NodeId(const std::array<uint8_t, 20>& bytes) : m_id(bytes) {}
 
     static NodeId random() {
@@ -40,7 +39,7 @@ public:
 
     static constexpr NodeId zero() noexcept { return NodeId{}; }
 
-    [[nodiscard]] constexpr auto bytes() noexcept { return m_id; }
+    [[nodiscard]] constexpr const std::array<uint8_t, 20>& bytes() const noexcept { return m_id; }
 
     constexpr auto operator<=>(const NodeId& other) const noexcept = default;
 
@@ -53,12 +52,15 @@ public:
     }
 
     [[nodiscard]] constexpr size_t logDistance(const NodeId& other) const noexcept {
-        auto distance = distanceTo(other);
-        for (auto it = distance.m_id.rbegin(); it != distance.m_id.rend(); ++it) {
-            if (*it != 0) {
-                return std::distance(distance.m_id.rbegin(), it) * 8 + std::bit_width(*it) - 1;
+        NodeId xorDistance = distanceTo(other);
+
+        for (size_t byte_index = 0; byte_index < xorDistance.bytes().size(); ++byte_index) {
+            uint8_t byte = xorDistance.bytes()[byte_index];
+            if (byte != 0) {
+                return (xorDistance.bytes().size() - byte_index - 1) * 8 + (7 - std::countl_zero(byte));
             }
         }
+
         return 0;
     }
 
@@ -72,6 +74,9 @@ public:
             return hashConstant;
         }
     };
+
+private:
+    std::array<uint8_t, 20> m_id;
 };
 
 struct PeerInfo {
@@ -80,6 +85,10 @@ struct PeerInfo {
     std::chrono::system_clock::time_point lastSeen{};
     NodeId nodeId{};
     bool isExpired{false};
+
+    [[nodiscard]] bool isValid() const {
+        return !ipAddress.empty() && port > 0 && nodeId.bytes() != NodeId::zero().bytes();
+    }
 
     auto operator<=>(const PeerInfo& other) const noexcept = default;
 };
@@ -90,34 +99,40 @@ private:
     size_t m_maxSize;
 
     bool pingPeer(const PeerInfo& /*peer*/) {
-        return true; // Placeholder
+        return true; // Placeholder for actual ping implementation
     }
 
 public:
     explicit KBucket(size_t maxSize = 20) : m_maxSize(maxSize) {}
 
-    void add(const PeerInfo& peer) {
+    std::expected<void, DHTError> add(const PeerInfo& peer) {
+        if (!peer.isValid()) {
+            return std::unexpected(DHTError::InvalidPeer);
+        }
+
         auto it = std::ranges::find_if(m_peers, [&peer](const PeerInfo& p) { return p.nodeId == peer.nodeId; });
 
         if (it != m_peers.end()) {
             *it = peer;
-            return;
+            return {};
         }
 
         if (m_peers.size() < m_maxSize) {
             m_peers.push_back(peer);
-        } else {
-            auto oldestIt = std::ranges::min_element(m_peers, {}, &PeerInfo::lastSeen);
-            if (!pingPeer(*oldestIt)) {
-                *oldestIt = peer;
-            }
+            return {};
         }
+
+        auto oldestIt = std::ranges::min_element(m_peers, {}, &PeerInfo::lastSeen);
+        if (!pingPeer(*oldestIt)) {
+            *oldestIt = peer;
+        }
+        return {};
     }
 
     void removeStalePeers(const std::chrono::seconds& staleThreshold) {
         auto now = std::chrono::system_clock::now();
-        std::erase_if(m_peers,
-                      [&now, &staleThreshold](const PeerInfo& peer) { return (now - peer.lastSeen) > staleThreshold; });
+        std::erase_if(
+            m_peers, [&now, &staleThreshold](const PeerInfo& peer) { return (now - peer.lastSeen) >= staleThreshold; });
     }
 
     std::optional<PeerInfo> find(const NodeId& nodeId) const {
@@ -140,10 +155,10 @@ public:
     RoutingTable(const NodeId& selfNodeId, size_t bucketSize = 20) :
         m_selfNodeId(selfNodeId), m_buckets(160), m_bucketSize(bucketSize) {}
 
-    void addPeer(const PeerInfo& peer) {
+    std::expected<void, DHTError> addPeer(const PeerInfo& peer) {
         std::unique_lock lock(m_mutex);
         size_t bucketIndex = m_selfNodeId.logDistance(peer.nodeId);
-        m_buckets[bucketIndex].add(peer);
+        return m_buckets[bucketIndex].add(peer);
     }
 
     void refreshBuckets(const std::chrono::seconds& staleThreshold) {
@@ -202,7 +217,7 @@ public:
 
 private:
     RoutingTable m_routingTable;
-    Config m_config;
+    Config m_config{};
     std::jthread m_refreshThread;
     std::atomic<bool> m_isRunning{true};
 
@@ -227,16 +242,15 @@ public:
         }
     }
 
-    std::optional<DHTError> addPeer(const PeerInfo& peer) noexcept {
+    std::expected<void, DHTError> addPeer(const PeerInfo& peer) noexcept {
         if (m_routingTable.getPeerCount() >= m_config.maxPeers) {
-            return DHTError::PeerLimitExceeded;
+            return std::unexpected(DHTError::PeerLimitExceeded);
         }
 
         PeerInfo newPeer = peer;
         newPeer.lastSeen = std::chrono::system_clock::now();
         newPeer.isExpired = false;
-        m_routingTable.addPeer(newPeer);
-        return std::nullopt;
+        return m_routingTable.addPeer(newPeer);
     }
 
     [[nodiscard]] std::optional<PeerInfo> getPeer(const NodeId& nodeId) const {

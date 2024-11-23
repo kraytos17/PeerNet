@@ -1,6 +1,5 @@
 #include <chrono>
 #include <gtest/gtest.h>
-#include <thread>
 #include "../src/kademlia.hpp"
 
 class DHTTest : public ::testing::Test {
@@ -36,6 +35,16 @@ TEST(NodeIdTest, DistanceCalculation) {
     EXPECT_EQ(id1.distanceTo(id2), id2.distanceTo(id1));
 }
 
+TEST(NodeIdTest, LogDistanceCalculation) {
+    std::array<uint8_t, 20> bytes1 = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::array<uint8_t, 20> bytes2 = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+    NodeId id1(bytes1);
+    NodeId id2(bytes2);
+
+    EXPECT_EQ(id1.logDistance(id2), 153);
+}
+
 TEST(NodeIdTest, HashFunction) {
     NodeId id1 = NodeId::random();
     NodeId id2 = NodeId::random();
@@ -53,7 +62,7 @@ TEST_F(DHTTest, AddPeer) {
     PeerInfo peer1{"192.168.1.1", 8080, std::chrono::system_clock::now(), nodeId1};
 
     auto result = dht.addPeer(peer1);
-    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(result.has_value());
     EXPECT_EQ(dht.getPeerCount(), 1);
 }
 
@@ -68,11 +77,20 @@ TEST_F(DHTTest, AddPeerMaxLimit) {
     PeerInfo peer2{"192.168.1.2", 8081, std::chrono::system_clock::now(), nodeId2};
 
     auto result1 = dht.addPeer(peer1);
-    EXPECT_FALSE(result1.has_value());
+    EXPECT_TRUE(result1.has_value());
 
     auto result2 = dht.addPeer(peer2);
-    EXPECT_TRUE(result2.has_value());
-    EXPECT_EQ(result2.value(), DHTError::PeerLimitExceeded);
+    EXPECT_FALSE(result2.has_value());
+    EXPECT_EQ(result2.error(), DHTError::PeerLimitExceeded);
+}
+
+TEST_F(DHTTest, InvalidPeerAddition) {
+    DHT dht(NodeId::random(), defaultConfig);
+
+    PeerInfo invalidPeer{};
+    auto result = dht.addPeer(invalidPeer);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DHTError::InvalidPeer);
 }
 
 TEST_F(DHTTest, GetPeer) {
@@ -102,7 +120,7 @@ TEST_F(DHTTest, FindClosestPeers) {
     DHT dht(NodeId::random(), defaultConfig);
 
     NodeId targetId = NodeId::random();
-    for (int i = 0; i < 30; ++i) {
+    for (int i{0}; i < 30; ++i) {
         NodeId nodeId = NodeId::random();
         PeerInfo peer{"192.168.1." + std::to_string(i), static_cast<uint16_t>(8000 + i),
                       std::chrono::system_clock::now(), nodeId};
@@ -113,6 +131,11 @@ TEST_F(DHTTest, FindClosestPeers) {
 
     EXPECT_LE(closestPeers.size(), 20);
     EXPECT_GT(closestPeers.size(), 0);
+
+    for (size_t i{1}; i < closestPeers.size(); ++i) {
+        EXPECT_LE(closestPeers[i - 1].nodeId.distanceTo(targetId).bytes(),
+                  closestPeers[i].nodeId.distanceTo(targetId).bytes());
+    }
 }
 
 TEST_F(DHTTest, StalePeerRemoval) {
@@ -123,8 +146,6 @@ TEST_F(DHTTest, StalePeerRemoval) {
     PeerInfo peer{"192.168.1.1", 8080, std::chrono::system_clock::now() - std::chrono::seconds(2), nodeId};
 
     dht.addPeer(peer);
-
-    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     dht.refresh();
     auto retrievedPeer = dht.getPeer(nodeId);
