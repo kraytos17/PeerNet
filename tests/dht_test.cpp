@@ -1,6 +1,7 @@
 #include <chrono>
 #include <gtest/gtest.h>
-#include "../src/kademlia.hpp"
+#include "../src/kademlia/dht.hpp"
+
 
 class DHTTest : public ::testing::Test {
 protected:
@@ -45,11 +46,11 @@ TEST(NodeIdTest, LogDistanceCalculation) {
     EXPECT_EQ(id1.logDistance(id2), 153);
 }
 
-TEST(NodeIdTest, HashFunction) {
+TEST(NodeIdTest, HashImpl) {
     NodeId id1 = NodeId::random();
     NodeId id2 = NodeId::random();
 
-    NodeId::Hash hasher;
+    std::hash<NodeId> hasher;
 
     EXPECT_NE(hasher(id1), hasher(id2));
     EXPECT_EQ(hasher(id1), hasher(id1));
@@ -142,12 +143,17 @@ TEST_F(DHTTest, StalePeerRemoval) {
     defaultConfig.staleThreshold = std::chrono::seconds(1);
     DHT dht(NodeId::random(), defaultConfig);
 
+    auto oldTime = std::chrono::system_clock::now() - std::chrono::seconds(5);
     NodeId nodeId = NodeId::random();
-    PeerInfo peer{"192.168.1.1", 8080, std::chrono::system_clock::now() - std::chrono::seconds(2), nodeId};
+    PeerInfo peer{"192.168.1.1", 8080, oldTime, nodeId};
 
-    dht.addPeer(peer);
+    ASSERT_TRUE(dht.addPeer(peer)) << "Failed to add peer";
+
+    auto initialPeer = dht.getPeer(nodeId);
+    ASSERT_TRUE(initialPeer.has_value()) << "Peer was not added successfully";
 
     dht.refresh();
+
     auto retrievedPeer = dht.getPeer(nodeId);
-    EXPECT_FALSE(retrievedPeer.has_value());
+    EXPECT_FALSE(retrievedPeer.has_value()) << "Stale peer was not removed";
 }
