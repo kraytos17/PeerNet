@@ -1,0 +1,9 @@
+{
+	"authors": [
+		"Soumil Kumar"
+	],
+	"copyright": "Copyright © 2024, Soumil Kumar",
+	"description": "A peer-to-peer file sharing application written in D",
+	"license": "MIT",
+	"name": "peernet"
+}

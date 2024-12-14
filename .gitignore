@@ -1,0 +1,16 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/peernet
+peernet.so
+peernet.dylib
+peernet.dll
+peernet.a
+peernet.lib
+peernet-test-*
+*.exe
+*.pdb
+*.o
+*.obj
+*.lst
